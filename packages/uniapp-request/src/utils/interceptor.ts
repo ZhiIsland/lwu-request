@@ -90,11 +90,23 @@ export function interceptor(chain: any, params: Params, config: Config) {
             reqUrl = params.url;
         }
         if (options.method === 'GET') {
-            options.data = config.buildQueryString && config.buildQueryString(options.data as object)
-                ? config.buildQueryString(options.data as object)
-                // : new URLSearchParams(Object.entries(args.data)).toString();
-                : objToQueryString(options.data as object);
-            options.url = `${reqUrl}${options.data ? `?${options.data}` : ''}`;
+            if (config.buildQueryString) {
+                const queryData = config.buildQueryString(options.data as object);
+                if (queryData === 'false') {
+                    options.url = reqUrl;
+                } else {
+                    options.data = queryData ? queryData : objToQueryString(options.data as object);
+                    options.url = `${reqUrl}${options.data ? `?${options.data}` : ''}`;
+                }
+            } else {
+                // options.data = objToQueryString(options.data as object);
+                options.url = reqUrl;
+            }
+            //          options.data = config.buildQueryString && config.buildQueryString(options.data as object)
+            //              ? config.buildQueryString(options.data as object)
+            //              // : new URLSearchParams(Object.entries(args.data)).toString();
+            //              : objToQueryString(options.data as object);
+            // console.log(options.url);
         } else {
             options.url = reqUrl;
         }
@@ -182,4 +194,4 @@ export function interceptor(chain: any, params: Params, config: Config) {
         fail: fail,
         complete: complete
     }
-};
+}

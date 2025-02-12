@@ -1,3 +1,6 @@
+## 1.8.6 (2025-02-12)
++ 修复最近官方调整导致的 `GET` 请求参数拼接异常问题。
+
 ## 1.8.5  (2024-10-17)
 + 修复 `after` 拦截器自定义返回内容不生效的bug。
 + 请求配置项 `originalResponse` 新增对 `after` 拦截器的支持，如果开启，则 `after` 拦截器返回内容将会是原始请求返回内容。[详情](https://lwur.fdproxy.cn/config/request.html#originalresponse)
