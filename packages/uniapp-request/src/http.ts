@@ -1,120 +1,50 @@
 import { loading, useConfig, interceptor, useReqConfig } from './utils';
-// import qs from 'qs';
 import type { Config, RequestOptions, DownloadParams, UploadParams, DownloadSuccessResultCallback, UploadAliossOptions, RequestTask, RequestSuccessCallbackResult, GeneralCallbackResult } from './types';
 import UploadAlioss from './utils/alioss';
 import createRequest from './runtime';
 
-interface MultiOptions extends Config { };
-interface MultiOptions extends RequestOptions { };
+interface MultiOptions extends Config {};
+interface MultiOptions extends RequestOptions {};
 
-/**
- * @param {number} times 重试次数
- * @param {number} maximum_offretry 最大等待秒数
- * @returns {number}
- * 指数退避算法简介：
- * 为了解决如何设置适当的重传等待时间而存在的算法，基本流程如下：
- * - 1.客户端发起请求
- * - 2.请求失败，等待1 + random_number_milliseconds秒后重试请求。
- * - 3.请求失败，等待2 + random_number_milliseconds秒后重试请求。
- * - 4.请求失败，等待4 + random_number_milliseconds秒后重试请求。
- * - 5.以此类推，直至达到设置的等待时间上限为止结束请求，具体算法公式如下：
- *  Math.min((2 ** n + ranom_number_milliseconds), maxium_backoff)
- * 上述的random_number_milliseconds为1到1000的随机毫秒数
- */
 const makeRetryTimeout = (times: number, maximum_offretry: number): number => {
   const random_number_milliseconds = Math.floor(Math.random() * 1000);
   return Math.min(Math.pow(2, times) * 1000 + random_number_milliseconds, maximum_offretry);
 }
 
-/**
- * 对象转query string的参数字符串
- * @param obj 需要转化的对象参数
- */
 const objToQueryString = (obj: object): string => {
   if (typeof obj === 'object' && obj !== null) {
     return Object.keys(obj)
       .map((key) => `${key}=${encodeURIComponent((obj as any)[key])}`)
       .join('&');
   }
-
   return obj;
 }
 
-/**
- * 网络请求库封装
- * @public
- */
 export class Http {
-  /**
-   * 当前请求任务
-   */
   private currentRequestTask: RequestTask = {
     abort: () => { },
     onHeadersReceived: () => { },
     offHeadersReceived: () => { }
   };
   private requestTasksName = 'LWU-REQUEST-TASKS';
-  /**
-   * 请求锁
-   */
   private lock: boolean = true;
-  /**
-   * 请求列表
-   */
   private pending: Function[] = [];
-  /**
-   * 请求失败自动重试次数
-   */
   private retryCount: number = 3;
-  /**
-   * 请求失败用来生成重试时间上限（指数退避算法需要），单位秒
-   */
   private retryMaximum: number = 64;
-  /**
-   * 重试等待时间列表
-   */
   private retryTimeout: (number | undefined)[] = [];
-  /**
-   * 重试等待时间上限
-   */
   private retryDeadline: number = 10000;
-  /**
-   * 全局配置信息
-   */
+  private retryTokenRefreshCount = 0;
+  private maxTokenRefreshRetry = 1;
   private globalConfig: Config = {
-    baseUrl: {
-      pro: '',
-      dev: ''
-    },
-    /**
-     * 业务错误代码拦截处理程序，请根据业务实际情况灵活设置
-     * @param code
-     * @param errMsg
-     * @returns
-     */
+    baseUrl: { pro: '', dev: '' },
     errorHandleByCode: (code: number, errMsg?: string, reject?: (reason?: any) => void) => { },
-    /**
-     * API错误拦截处理程序，请根据业务实际情况灵活设置
-     * @param data
-     */
     apiErrorInterception: (data: any, args?: RequestSuccessCallbackResult, reject?: (reason?: any) => void) => { },
   };
-
-  /**
-   * 请求配置信息
-   */
   private reqConfig: RequestOptions = {};
 
   constructor(config: Config) {
-    this.globalConfig = {
-      ...useConfig(config),
-    };
-
-    this.reqConfig = {
-      task_id: '',
-      domain: '',
-      ...this.globalConfig
-    };
+    this.globalConfig = { ...useConfig(config) };
+    this.reqConfig = { task_id: '', domain: '', ...this.globalConfig };
 
     if (!this.globalConfig.retry) {
       this.retryCount = 0;
@@ -125,78 +55,57 @@ export class Http {
         this.retryDeadline = config.retryDeadline as number;
 
         for (let i = 0; i < this.retryCount; i++) {
-          if (this.retryDeadline < 0) {
-            break;
-          }
+          if (this.retryDeadline < 0) break;
           const timeout = makeRetryTimeout(i, this.retryMaximum);
           this.retryDeadline -= timeout;
           this.retryTimeout.push(timeout);
         }
-
         this.retryCount = this.retryTimeout.length;
       }
     }
-
-
   }
 
-  /**
-   * 请求失败的错误统一处理
-   * @param code - 错误码
-   * @param message - 自定义错误信息
-   */
   private handleError(code: number, message: string = ''): void {
-    // 调用错误状态码处理程序
     this.globalConfig.errorHandleByCode && this.globalConfig.errorHandleByCode(code, message);
   }
 
-  /**
-   * 刷新token处理
-   */
   private refreshToken() {
     if (this.globalConfig.refreshTokenHandle) {
       this.globalConfig.refreshTokenHandle()
         .then(() => {
-          // 重新执行业务请求
           uni.getStorageSync('LWU-REQUEST-CALLBACK')((callback: () => void) => {
             callback();
           })
         })
         .catch(() => {
-          // token失效
           this.handleError(this.globalConfig.tokenExpiredCode as number);
         });
     }
   }
 
   private async beforeRequest(data: any = {}, options?: MultiOptions, callback: any = null, url: string = '') {
-    // 判断该请求队列是否存在，如果存在则中断请求
     const requestTasks = uni.getStorageSync(this.requestTasksName);
     let taskId = options?.task_id ?? '';
+    
     if (this.globalConfig.taskIdValue) {
       taskId = await this.globalConfig.taskIdValue(data, options) as string;
-      // this.globalConfig.taskIdValue(data, options).then(res => {
-      //   options.task_id = res
-      // })
     }
+
     if (taskId && requestTasks[taskId]) {
       if (this.globalConfig.debug) {
         console.warn(`【LwuRequest Debug】请求ID${taskId}有重复项已自动过滤`);
       }
-
       requestTasks[taskId]?.abort();
     }
 
     return new Promise(async (resolve, reject) => {
-      // 判断是否存在token，如果存在则在请求头统一添加token，token获取从config配置获取
       let token = uni.getStorageSync(this.globalConfig.tokenStorageKeyName as string);
 
       const setToken = () => {
         return new Promise(async (resolve, _) => {
           token && resolve(token);
-
-          // 获取旧的token
           let refreshToken = '';
+          
           if (this.globalConfig.tokenValue) {
             refreshToken = await this.globalConfig.tokenValue() as string;
           }
@@ -228,7 +137,6 @@ export class Http {
             data[this.globalConfig.takenTokenKeyName as string] = getToken;
           }
         }
-
         resolve(true);
       });
     });
@@ -242,69 +150,49 @@ export class Http {
     };
 
     return new Promise((resolve, reject) => {
-      if (this.beforeRequest) {
-        this.beforeRequest(data, {
-          ...multiOptions,
-          baseUrl: {
-            dev: multiOptions.domain ?? this.globalConfig?.baseUrl.dev,
-            pro: multiOptions.domain ?? this.globalConfig?.baseUrl.pro
-          }
-        }, callback, url).then(async () => {
-          // 拦截器
-          const chain = interceptor({
-            request: (options: any) => {
-              url = options.url;
-              multiOptions = {
-                ...this.reqConfig,
-                ...options,
-                header: {
-                  ...this.reqConfig.header,
-                  ...options?.header
-                }
+      this.beforeRequest(data, {
+        ...multiOptions,
+        baseUrl: {
+          dev: multiOptions.domain ?? this.globalConfig?.baseUrl.dev,
+          pro: multiOptions.domain ?? this.globalConfig?.baseUrl.pro
+        }
+      }, callback, url).then(async () => {
+        const chain = interceptor({
+          request: (options: any) => {
+            url = options.url;
+            multiOptions = {
+              ...this.reqConfig,
+              ...options,
+              header: {
+                ...this.reqConfig.header,
+                ...options?.header
               }
-
-              return options;
-            },
-            response: (response: any) => {
-              return response;
-              // resolve(response);
-            },
-            fail: (err: any) => {
-              reject(err);
-              return err;
             }
-          }, {
-            url: url,
-            ...multiOptions
-          }, {
-            ...this.globalConfig,
-            baseUrl: {
-              dev: multiOptions.domain || this.globalConfig.baseUrl.dev,
-              pro: multiOptions.domain || this.globalConfig.baseUrl.pro
-            }
-          });
-          chain.request({
-            header: {
-              // contentType: '',
-              ...multiOptions.header
-            },
-            method: options?.method ?? 'GET',
-            customData: multiOptions.customData,
-            data,
-            url
-          });
+            return options;
+          },
+          response: (response: any) => {
+            return response;
+          },
+          fail: (err: any) => {
+            reject(err);
+            return err;
+          }
+        }, {
+          url: url,
+          ...multiOptions
+        }, {
+          ...this.globalConfig,
+          baseUrl: {
+            dev: multiOptions.domain || this.globalConfig.baseUrl.dev,
+            pro: multiOptions.domain || this.globalConfig.baseUrl.pro
+          }
+        });
 
-          // 发起请求
+        const makeRequest = () => {
           this.currentRequestTask = createRequest({
             url: url,
-            data: {
-              ...data,
-              ...(multiOptions as any).data || {}
-            },
-            // header: reqHeader.header,
-            header: {
-              ...multiOptions.header
-            },
+            data: { ...data, ...(multiOptions as any).data || {} },
+            header: { ...multiOptions.header },
             method: multiOptions.method as any,
             timeout: multiOptions.timeout,
             dataType: multiOptions.dataType as 'json' | '其他',
@@ -313,89 +201,79 @@ export class Http {
             withCredentials: multiOptions.withCredentials,
             firstIpv4: multiOptions.firstIpv4,
             success: (res: RequestSuccessCallbackResult) => {
-              // chain.response(res, reject);
-
-              if (typeof this.globalConfig.xhrCode === 'undefined') {
-                this.globalConfig.apiErrorInterception && this.globalConfig.apiErrorInterception(res.data, res, reject);
-              } else {
-                if (
-									this.globalConfig.xhrCodeName &&
-									(res.data as any)[this.globalConfig.xhrCodeName] !== 'undefined' &&
-									(res.data as any)[this.globalConfig.xhrCodeName] !== this.globalConfig.xhrCode
-								) {
-									this.globalConfig.apiErrorInterception && this.globalConfig.apiErrorInterception(res.data, res, reject);
-									reject(res);
-								}
-              }
-
               let tokenExpiredCode = res.statusCode;
-              if (this.globalConfig?.tokenExpiredCodeType === 'apiResponseCode' && typeof this.globalConfig.tokenExpiredCode !== undefined && this.globalConfig.xhrCodeName) {
+              if (this.globalConfig?.tokenExpiredCodeType === 'apiResponseCode' && 
+                  typeof this.globalConfig.tokenExpiredCode !== undefined && 
+                  this.globalConfig.xhrCodeName) {
                 tokenExpiredCode = (res.data as any)[this.globalConfig.xhrCodeName];
               }
 
+              if (tokenExpiredCode === this.globalConfig.tokenExpiredCode) {
+                if (this.retryTokenRefreshCount >= this.maxTokenRefreshRetry) {
+                  reject('达到最大token刷新重试次数');
+                  return;
+                }
+                this.retryTokenRefreshCount++;
+                
+                this.globalConfig.debug && console.warn(`【LwuRequest Debug】token失效，开始执行刷新token程序`);
+                
+                if (this.globalConfig.refreshTokenHandle) {
+                  this.globalConfig.refreshTokenHandle().then((newToken) => {
+                    this.globalConfig.debug && console.warn(`【LwuRequest Debug】新的token:${newToken}`);
+                    
+                    if (newToken && multiOptions.header) {
+                      (multiOptions.header as any)[this.globalConfig?.takenTokenKeyName as string] = newToken;
+                    }
+                    
+                    makeRequest();
+                  }).catch(() => {
+                    reject(res);
+                  });
+                  return;
+                }
+              }
+
               if (callback) {
-                this.globalConfig.debug && console.warn(`【LwuRequest Debug】token失效二次请求成功响应:${JSON.stringify(res.data)}`);
                 callback(res.data);
                 return;
               }
 
-              if (tokenExpiredCode !== this.globalConfig.tokenExpiredCode) {
-                // resolve(options.originalResponse ? res : res.data);
-                if (this.globalConfig.after) {
-                  resolve(chain.response(res, reject));
-                } else {
-                  resolve(options.originalResponse ? res : res.data);
-                }
-                // chain.response(options.originalResponse ? res : res.data, reject);
-              } else {
-                // 刷新token
-                this.globalConfig.debug && console.warn(`【LwuRequest Debug】token失效，开始执行刷新token程序`);
-
-                if (this.globalConfig.refreshTokenHandle) {
-                  this.globalConfig.refreshTokenHandle().then((newToken) => {
-                    this.globalConfig.debug && console.warn(`【LwuRequest Debug】新的token:${newToken}`);
-                    this.globalConfig.debug && console.warn(`【LwuRequest Debug】自动刷新token完成，开始重新发起请求`);
-                    this.request(url, data, multiOptions, resolve);
-                  });
-                }
-              }
+              const processedResponse = this.globalConfig.after 
+                ? chain.response(res, reject) 
+                : (options.originalResponse ? res : res.data);
+              
+              resolve(processedResponse);
             },
             fail: (err: GeneralCallbackResult) => {
               chain.fail(err);
               this.retryCount = multiOptions.retryCount ?? 3;
 
               if (this.retryCount) {
-                if (this.globalConfig.debug) {
-                  console.warn(`【LwuRequest Debug】自动重试次数:${this.retryCount}`);
-                }
                 this.retryCount--;
-                setTimeout(this.request, this.retryTimeout.shift());
-                // 网络异常或者断网处理
+                setTimeout(makeRequest, this.retryTimeout.shift());
                 this.globalConfig.networkExceptionHandle && this.globalConfig.networkExceptionHandle();
               }
-
               reject(err);
             },
             complete: (res: UniApp.GeneralCallbackResult) => {
               chain.complete(res);
-              // uni.removeInterceptor('request');
             }
           }, this.globalConfig.env);
+        };
 
-          let taskId = multiOptions?.task_id ?? '';
-          if (this.globalConfig.taskIdValue) {
-            taskId = await this.globalConfig.taskIdValue(data, options) as string;
-          }
+        makeRequest();
 
-          // 判断是否设置请求队列ID
-          if (taskId) {
-            // 当前请求存入缓存
-            let tasks: RequestTask[] = [];
-            tasks[taskId as any] = this.currentRequestTask;
-            uni.setStorageSync(this.requestTasksName, tasks);
-          }
-        });
-      }
+        let taskId = multiOptions?.task_id ?? '';
+        if (this.globalConfig.taskIdValue) {
+          taskId = await this.globalConfig.taskIdValue(data, options) as string;
+        }
+
+        if (taskId) {
+          let tasks: RequestTask[] = [];
+          tasks[taskId as any] = this.currentRequestTask;
+          uni.setStorageSync(this.requestTasksName, tasks);
+        }
+      });
     });
   }
 

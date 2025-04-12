@@ -557,58 +557,21 @@ interface UploadAliossOptions {
 
 type RequestMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'OPTIONS' | 'HEAD' | 'TRACE' | 'CONNECT';
 
-/**
- * 网络请求库封装
- * @public
- */
 declare class Http {
-    /**
-     * 当前请求任务
-     */
     private currentRequestTask;
     private requestTasksName;
-    /**
-     * 请求锁
-     */
     private lock;
-    /**
-     * 请求列表
-     */
     private pending;
-    /**
-     * 请求失败自动重试次数
-     */
     private retryCount;
-    /**
-     * 请求失败用来生成重试时间上限（指数退避算法需要），单位秒
-     */
     private retryMaximum;
-    /**
-     * 重试等待时间列表
-     */
     private retryTimeout;
-    /**
-     * 重试等待时间上限
-     */
     private retryDeadline;
-    /**
-     * 全局配置信息
-     */
+    private retryTokenRefreshCount;
+    private maxTokenRefreshRetry;
     private globalConfig;
-    /**
-     * 请求配置信息
-     */
     private reqConfig;
     constructor(config: Config);
-    /**
-     * 请求失败的错误统一处理
-     * @param code - 错误码
-     * @param message - 自定义错误信息
-     */
     private handleError;
-    /**
-     * 刷新token处理
-     */
     private refreshToken;
     private beforeRequest;
     request(url: string, data: any, options: RequestOptions, callback?: any): Promise<unknown>;
